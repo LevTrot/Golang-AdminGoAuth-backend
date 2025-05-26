@@ -1,4 +1,4 @@
-package main
+package database
 
 import (
 	"log"
@@ -9,6 +9,7 @@ import (
 
 var db *sqlx.DB
 
+// Подключение БД
 func ConnectDB() *sqlx.DB {
 	dsn := "postgres://postgres:mysecretpassword@localhost:5432/postgres?sslmode=disable"
 	conn, err := sqlx.Connect("postgres", dsn)
