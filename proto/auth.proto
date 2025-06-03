@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package auth;
+
+option go_package = "github.com/LevTrot/sstu-golang-adminGoForum-backend/backend/proto/authpb";
+
+service AuthService {
+  rpc ValidateToken (ValidateTokenRequest) returns (ValidateTokenResponse);
+}
+
+message ValidateTokenRequest {
+  string token = 1;
+}
+
+message ValidateTokenResponse {
+  int32 user_id = 1;
+  string username = 2;
+  string role = 3;
+  bool valid = 4;
+  string error = 5;
+}

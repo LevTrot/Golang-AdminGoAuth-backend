@@ -64,7 +64,7 @@ func (h *Handler) RegisterHandler(c *gin.Context) {
 	}
 
 	_, err = h.DB.Exec(`
-		INSERT INTO mydb.users (username, email, password_hash, role)
+		INSERT INTO auth_schema.users (username, email, password_hash, role)
 		VALUES ($1, $2, $3, $4)`,
 		input.Username, input.Email, string(hash), input.Role)
 
@@ -96,7 +96,7 @@ func (h *Handler) LoginHandler(c *gin.Context) {
 	}
 
 	var user User
-	err := h.DB.Get(&user, "SELECT * FROM mydb.users WHERE email=$1", input.Email)
+	err := h.DB.Get(&user, "SELECT * FROM auth_schema.users WHERE email=$1", input.Email)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
@@ -108,7 +108,7 @@ func (h *Handler) LoginHandler(c *gin.Context) {
 		return
 	}
 
-	accessToken, err := domain.GenerateAccessToken(user.ID, user.Username)
+	accessToken, err := domain.GenerateAccessToken(user.ID, user.Username, user.Role)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate access token"})
 		return
@@ -117,7 +117,7 @@ func (h *Handler) LoginHandler(c *gin.Context) {
 	refreshToken := domain.GenerateRefreshToken()
 	expiresAt := time.Now().Add(30 * 24 * time.Hour)
 
-	_, err = h.DB.Exec("INSERT INTO mydb.refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)",
+	_, err = h.DB.Exec("INSERT INTO auth_schema.refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)",
 		user.ID, refreshToken, expiresAt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store refresh token"})
@@ -130,17 +130,18 @@ func (h *Handler) LoginHandler(c *gin.Context) {
 	})
 }
 
-// RefreshHandler обновляет access token
-// @Summary Refresh access token
+// RefreshHandler обновляет access token и возвращает новый refresh token
+// @Summary Обновить access и refresh токены
+// @Description Принимает refresh_token, проверяет его, выдает новый access_token и refresh_token
 // @Tags auth
 // @Accept json
 // @Produce json
-// @Param input body map[string]string true "Refresh token"
-// @Success 200 {object} map[string]string
-// @Failure 400 {object} map[string]string
-// @Failure 401 {object} map[string]string
-// @Failure 500 {object} map[string]string
-// @Router /refresh [post]
+// @Param input body RefreshRequest true "Тело запроса с refresh_token"
+// @Success 200 {object} TokenResponse
+// @Failure 400 {object} ErrorResponse "Некорректный ввод"
+// @Failure 401 {object} ErrorResponse "Неверный или истёкший refresh токен"
+// @Failure 500 {object} ErrorResponse "Ошибка сервера"
+// @Router /api/refresh [post]
 func (h *Handler) RefreshHandler(c *gin.Context) {
 	var input struct {
 		RefreshToken string `json:"refresh_token"`
@@ -152,28 +153,47 @@ func (h *Handler) RefreshHandler(c *gin.Context) {
 
 	var userID int
 	var expiresAt time.Time
-	err := h.DB.QueryRow("SELECT user_id, expires_at FROM mydb.refresh_tokens WHERE token=$1", input.RefreshToken).
+	err := h.DB.QueryRow("SELECT user_id, expires_at FROM auth_schema.refresh_tokens WHERE token=$1", input.RefreshToken).
 		Scan(&userID, &expiresAt)
 	if err != nil || time.Now().After(expiresAt) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired refresh token"})
 		return
 	}
 
-	var username string
-	err = h.DB.QueryRow("SELECT username FROM mydb.users WHERE id=$1", userID).Scan(&username)
+	_, err = h.DB.Exec("DELETE FROM auth_schema.refresh_tokens WHERE token = $1", input.RefreshToken)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete old refresh token"})
+		return
+	}
+
+	var username, role string
+	err = h.DB.QueryRow("SELECT username, role FROM auth_schema.users WHERE id=$1", userID).Scan(&username, &role)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch user"})
 		return
 	}
 
-	accessToken, err := domain.GenerateAccessToken(userID, username)
+	accessToken, err := domain.GenerateAccessToken(userID, username, role)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not generate access token"})
 		return
 	}
 
+	newRefreshToken := domain.GenerateRefreshToken()
+	newExpiresAt := time.Now().Add(30 * 24 * time.Hour)
+
+	_, err = h.DB.Exec(
+		"INSERT INTO auth_schema.refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)",
+		userID, newRefreshToken, newExpiresAt,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store new refresh token"})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"access_token": accessToken,
+		"access_token":  accessToken,
+		"refresh_token": newRefreshToken,
 	})
 }
 

@@ -7,6 +7,12 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	"AdminGo/AdminGo/proto/authpb"
+	authgrpc "AdminGo/internal/grpc"
+	"net"
+
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -15,8 +21,21 @@ func main() {
 
 	h := handler.NewHandler(db)
 
-	r := gin.Default()
+	go func() {
+		lis, err := net.Listen("tcp", ":50051")
+		if err != nil {
+			log.Fatalf("failed to listen: %v", err)
+		}
 
+		grpcServer := grpc.NewServer()
+		authpb.RegisterAuthServiceServer(grpcServer, authgrpc.NewAuthGRPCServer(db))
+		log.Println("GRPC server listening on :50051")
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatalf("failed to serve: %v", err)
+		}
+	}()
+
+	r := gin.Default()
 	r.Use(CORSMiddleware())
 	r.POST("/api/register", h.RegisterHandler)
 	r.POST("/api/login", h.LoginHandler)
@@ -31,7 +50,7 @@ func main() {
 
 func CORSMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://localhost:5174")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
