@@ -2,22 +2,22 @@ package handler
 
 import (
 	"AdminGo/internal/domain"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type Handler struct {
-	DB *sqlx.DB
+	DB     *sqlx.DB
+	logger *zap.Logger
 }
 
-// NewHandler возвращает новый Handler с подключённой БД
-func NewHandler(db *sqlx.DB) *Handler {
-	return &Handler{DB: db}
+func NewHandler(db *sqlx.DB, logger *zap.Logger) *Handler {
+	return &Handler{DB: db, logger: logger}
 }
 
 type User struct {
@@ -40,6 +40,19 @@ type LoginInput struct {
 	Password string `json:"password_hash"`
 }
 
+type RefreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+type TokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
+
 // RegisterHandler регистрирует нового пользователя
 // @Summary Register user
 // @Tags auth
@@ -53,12 +66,14 @@ type LoginInput struct {
 func (h *Handler) RegisterHandler(c *gin.Context) {
 	var input RegisterInput
 	if err := c.ShouldBindJSON(&input); err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
 		return
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), 14)
 	if err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "password hashing failed"})
 		return
 	}
@@ -69,11 +84,12 @@ func (h *Handler) RegisterHandler(c *gin.Context) {
 		input.Username, input.Email, string(hash), input.Role)
 
 	if err != nil {
-		log.Println("Insert error:", err)
+		h.logger.Fatal("Insert error:", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to register", "details": err.Error()})
 		return
 	}
 
+	h.logger.Info("User registered")
 	c.JSON(http.StatusOK, gin.H{"message": "registered"})
 }
 
@@ -91,6 +107,7 @@ func (h *Handler) RegisterHandler(c *gin.Context) {
 func (h *Handler) LoginHandler(c *gin.Context) {
 	var input LoginInput
 	if err := c.ShouldBindJSON(&input); err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
 		return
 	}
@@ -98,18 +115,21 @@ func (h *Handler) LoginHandler(c *gin.Context) {
 	var user User
 	err := h.DB.Get(&user, "SELECT * FROM auth_schema.users WHERE email=$1", input.Email)
 	if err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
 	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password))
 	if err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "wrong password"})
 		return
 	}
 
 	accessToken, err := domain.GenerateAccessToken(user.ID, user.Username, user.Role)
 	if err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate access token"})
 		return
 	}
@@ -120,10 +140,12 @@ func (h *Handler) LoginHandler(c *gin.Context) {
 	_, err = h.DB.Exec("INSERT INTO auth_schema.refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)",
 		user.ID, refreshToken, expiresAt)
 	if err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store refresh token"})
 		return
 	}
 
+	h.logger.Info("User authorized")
 	c.JSON(http.StatusOK, gin.H{
 		"access_token":  accessToken,
 		"refresh_token": refreshToken,
@@ -143,10 +165,9 @@ func (h *Handler) LoginHandler(c *gin.Context) {
 // @Failure 500 {object} ErrorResponse "Ошибка сервера"
 // @Router /api/refresh [post]
 func (h *Handler) RefreshHandler(c *gin.Context) {
-	var input struct {
-		RefreshToken string `json:"refresh_token"`
-	}
+	var input RefreshRequest
 	if err := c.ShouldBindJSON(&input); err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
 		return
 	}
@@ -156,12 +177,14 @@ func (h *Handler) RefreshHandler(c *gin.Context) {
 	err := h.DB.QueryRow("SELECT user_id, expires_at FROM auth_schema.refresh_tokens WHERE token=$1", input.RefreshToken).
 		Scan(&userID, &expiresAt)
 	if err != nil || time.Now().After(expiresAt) {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired refresh token"})
 		return
 	}
 
 	_, err = h.DB.Exec("DELETE FROM auth_schema.refresh_tokens WHERE token = $1", input.RefreshToken)
 	if err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete old refresh token"})
 		return
 	}
@@ -169,12 +192,14 @@ func (h *Handler) RefreshHandler(c *gin.Context) {
 	var username, role string
 	err = h.DB.QueryRow("SELECT username, role FROM auth_schema.users WHERE id=$1", userID).Scan(&username, &role)
 	if err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch user"})
 		return
 	}
 
 	accessToken, err := domain.GenerateAccessToken(userID, username, role)
 	if err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not generate access token"})
 		return
 	}
@@ -187,10 +212,12 @@ func (h *Handler) RefreshHandler(c *gin.Context) {
 		userID, newRefreshToken, newExpiresAt,
 	)
 	if err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store new refresh token"})
 		return
 	}
 
+	h.logger.Info("Refreshed new token")
 	c.JSON(http.StatusOK, gin.H{
 		"access_token":  accessToken,
 		"refresh_token": newRefreshToken,
@@ -219,9 +246,11 @@ func (h *Handler) ProfileHandler(c *gin.Context) {
 
 	claims, err := domain.ParseAccessToken(token)
 	if err != nil {
+		h.logger.Fatal("error", zap.Error(err))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
 		return
 	}
 
+	h.logger.Info("User parsed successful")
 	c.JSON(http.StatusOK, gin.H{"username": claims.Username})
 }

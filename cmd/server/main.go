@@ -3,10 +3,15 @@ package main
 import (
 	"AdminGo/internal/handler"
 	"AdminGo/pkg/database"
-	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
+	_ "AdminGo/docs"
+
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 
 	"AdminGo/AdminGo/proto/authpb"
 	authgrpc "AdminGo/internal/grpc"
@@ -15,36 +20,48 @@ import (
 	"google.golang.org/grpc"
 )
 
+// @title AdminGo API
+// @version 1.0
+// @description Документация для AdminGo API.
+// @host localhost:8081
+// @BasePath /
 func main() {
-	db := database.ConnectDB()
+	logger, err := zap.NewProduction()
+	if err != nil {
+		logger.Fatal("не удалось инициализировать логгер: %v", zap.Error(err))
+	}
+	defer logger.Sync()
+	db := database.ConnectDB(logger)
 	defer db.Close()
 
-	h := handler.NewHandler(db)
+	h := handler.NewHandler(db, logger)
 
 	go func() {
 		lis, err := net.Listen("tcp", ":50051")
 		if err != nil {
-			log.Fatalf("failed to listen: %v", err)
+			logger.Fatal("failed to listen: %v", zap.Error(err))
 		}
 
 		grpcServer := grpc.NewServer()
 		authpb.RegisterAuthServiceServer(grpcServer, authgrpc.NewAuthGRPCServer(db))
-		log.Println("GRPC server listening on :50051")
+		logger.Info("GRPC server listening on :50051")
 		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("failed to serve: %v", err)
+			logger.Fatal("failed to serve: %v", zap.Error(err))
 		}
 	}()
-
 	r := gin.Default()
+
+	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
 	r.Use(CORSMiddleware())
 	r.POST("/api/register", h.RegisterHandler)
 	r.POST("/api/login", h.LoginHandler)
 	r.POST("/api/refresh", h.RefreshHandler)
 	r.GET("/api/profile", h.ProfileHandler)
 
-	err := r.Run(":8081")
+	err = r.Run(":8081")
 	if err != nil {
-		log.Fatal("Server Run Failed: ", err)
+		logger.Fatal("Server Run Failed: ", zap.Error(err))
 	}
 }
 

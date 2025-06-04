@@ -4,7 +4,6 @@ import (
 	"AdminGo/AdminGo/proto/authpb"
 	"AdminGo/internal/domain"
 	"context"
-	"log"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -30,7 +29,6 @@ func (s *AuthGRPCServer) ValidateToken(ctx context.Context, req *authpb.Validate
 	var role string
 	err = s.DB.Get(&role, "SELECT role FROM auth_schema.users WHERE id=$1", claims.UserID)
 	if err != nil {
-		log.Println("Failed to fetch role:", err)
 		return &authpb.ValidateTokenResponse{
 			Valid: false,
 			Error: "could not fetch role",
